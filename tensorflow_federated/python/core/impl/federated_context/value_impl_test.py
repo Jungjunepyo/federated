@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import collections
+from typing import List, Tuple
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -23,13 +24,20 @@ from tensorflow_federated.python.common_libs import structure
 from tensorflow_federated.python.core.api import computation_types
 from tensorflow_federated.python.core.api import computations
 from tensorflow_federated.python.core.api import value_base
-from tensorflow_federated.python.core.impl import value_impl
 from tensorflow_federated.python.core.impl.compiler import building_blocks
 from tensorflow_federated.python.core.impl.compiler import tree_transformations
 from tensorflow_federated.python.core.impl.context_stack import context_stack_impl
-from tensorflow_federated.python.core.impl.executors import executor_test_utils
 from tensorflow_federated.python.core.impl.federated_context import federated_computation_context
+from tensorflow_federated.python.core.impl.federated_context import value_impl
 from tensorflow_federated.python.core.impl.types import placement_literals
+
+
+def get_symbol_for_name(bindings: List[Tuple[
+    str, building_blocks.ComputationBuildingBlock]],
+                        name: str) -> building_blocks.ComputationBuildingBlock:
+  for binding_name, symbol in bindings:
+    if binding_name == name:
+      return symbol
 
 
 class ValueImplTest(parameterized.TestCase):
@@ -624,42 +632,61 @@ class ValueImplTest(parameterized.TestCase):
     missing_attr = getattr(struct_value, 'c', None)
     self.assertIsNone(missing_attr)
 
-  @executor_test_utils.executors
-  def test_setattr_named_tuple_type_int(self):
+  def test_setattr_named_tuple_type(self):
+    ref_type = computation_types.StructType([('a', tf.int32), ('b', tf.bool)])
+    ref = building_blocks.Reference('test', ref_type)
+    value = value_impl.to_value(ref, None, context_stack_impl.context_stack)
 
-    @computations.federated_computation([('a', tf.int32), ('b', tf.bool)])
-    def foo(x):
-      x.a = 10
-      return x
+    context = context_stack_impl.context_stack.current
+    self.assertEmpty(context.symbol_bindings)
+    building_block_1 = value_impl.ValueImpl.get_comp(value)
+    self.assertEqual(building_block_1.formatted_representation(), 'test')
 
-    self.assertEqual(foo([5, True]).a, 10)
-    self.assertEqual(foo([0, True]).a, 10)
-    self.assertEqual(foo([5, True]).b, True)
+    value.a = 10
 
-  @executor_test_utils.executors
-  def test_setattr_named_tuple_type_bool(self):
+    ref = value_impl.ValueImpl.get_comp(value)
+    self.assertNotEmpty(context.symbol_bindings)
+    building_block_2 = get_symbol_for_name(context.symbol_bindings, ref.name)
+    # pyformat: disable
+    self.assertEqual(
+        building_block_2.formatted_representation(),
+        '(let\n'
+        '  value_comp_placeholder=fc_FEDERATED_symbol_0\n'
+        ' in (lambda_arg -> <\n'
+        '  a=value_comp_placeholder,\n'
+        '  b=lambda_arg[1]\n'
+        '>))(test)'
+    )
+    # pyformat: enable
 
-    @computations.federated_computation([('a', tf.int32), ('b', tf.bool)])
-    def foo(x):
-      x.b = False
-      return x
+  def test_setattr_federated_named_tuple_type(self):
+    ref_type = computation_types.FederatedType([('a', tf.int32),
+                                                ('b', tf.bool)],
+                                               placement_literals.SERVER,
+                                               all_equal=True)
+    ref = building_blocks.Reference('test', ref_type)
+    value = value_impl.to_value(ref, None, context_stack_impl.context_stack)
 
-    self.assertEqual(foo([5, True]).b, False)
-    self.assertEqual(foo([5, False]).b, False)
-    self.assertEqual(foo([0, True]).a, 0)
+    building_block_1 = value_impl.ValueImpl.get_comp(value)
+    self.assertEqual(building_block_1.formatted_representation(), 'test')
 
-  @executor_test_utils.executors
-  def test_setattr_named_tuple_with_unnamed_element(self):
+    value.a = 10
 
-    @computations.federated_computation([('a', tf.int32), (None, tf.float32),
-                                         ('b', tf.bool)])
-    def foo(x):
-      x.b = False
-      return x
-
-    self.assertEqual(foo([5, 1.0, True]).b, False)
-    self.assertEqual(foo([5, 1.0, False]).b, False)
-    self.assertEqual(foo([5, 1.0, True])[1], 1.0)
+    building_block_2 = value_impl.ValueImpl.get_comp(value)
+    # pyformat: disable
+    self.assertEqual(
+        building_block_2.formatted_representation(), ''
+        'federated_apply(<\n'
+        '  (let\n'
+        '    value_comp_placeholder=fc_FEDERATED_symbol_0\n'
+        '   in (lambda_arg -> <\n'
+        '    a=value_comp_placeholder,\n'
+        '    b=lambda_arg[1]\n'
+        '  >)),\n'
+        '  test\n'
+        '>)'
+    )
+    # pyformat: enable
 
   def test_setattr_named_tuple_type_fails_on_implicit_type_conversion(self):
 
@@ -696,99 +723,6 @@ class ValueImplTest(parameterized.TestCase):
       def _(x):
         x.c = 10
         return x
-
-  @executor_test_utils.executors
-  def test_setattr_federated_named_tuple_int_on_server(self):
-    self.skipTest(
-        'TODO(b/148685415): Calling setatter on a FederatedType constructs a '
-        'lambda passed to intrinsic containing a reference to a captured '
-        'variable; a native execution stack can not handle this structure.')
-
-    @computations.federated_computation(
-        computation_types.FederatedType([('a', tf.int32), ('b', tf.bool)],
-                                        placement_literals.SERVER,
-                                        all_equal=True))
-    def foo(x):
-      x.a = 10
-      return x
-
-    self.assertEqual(foo([5, True]), structure.Struct([('a', 10), ('b', True)]))
-
-  @executor_test_utils.executors
-  def test_setattr_federated_named_tuple_int(self):
-    self.skipTest(
-        'TODO(b/148685415): Calling setatter on a FederatedType constructs a '
-        'lambda passed to intrinsic containing a reference to a captured '
-        'variable; a native execution stack can not handle this structure.')
-
-    @computations.federated_computation(
-        computation_types.FederatedType([('a', tf.int32), ('b', tf.bool)],
-                                        placement_literals.CLIENTS))
-    def foo(x):
-      x.a = 10
-      return x
-
-    self.assertEqual(
-        foo([[5, True], [0, False], [-5, True]]), [
-            structure.Struct([('a', 10), ('b', True)]),
-            structure.Struct([('a', 10), ('b', False)]),
-            structure.Struct([('a', 10), ('b', True)])
-        ])
-
-  @executor_test_utils.executors
-  def test_setattr_federated_named_tuple_type_bool(self):
-    self.skipTest(
-        'TODO(b/148685415): Calling setatter on a FederatedType constructs a '
-        'lambda passed to intrinsic containing a reference to a captured '
-        'variable; a native execution stack can not handle this structure.')
-
-    @computations.federated_computation(
-        computation_types.FederatedType([('a', tf.int32), ('b', tf.bool)],
-                                        placement_literals.CLIENTS))
-    def foo(x):
-      x.b = False
-      return x
-
-    self.assertEqual(
-        foo([[5, True], [0, False], [-5, True]]), [
-            structure.Struct([('a', 5), ('b', False)]),
-            structure.Struct([('a', 0), ('b', False)]),
-            structure.Struct([('a', -5), ('b', False)])
-        ])
-
-  @executor_test_utils.executors
-  def test_setattr_federated_named_tuple_type_with_unnamed_element(self):
-    self.skipTest(
-        'TODO(b/148685415): Calling setatter on a FederatedType constructs a '
-        'lambda passed to intrinsic containing a reference to a captured '
-        'variable; a native execution stack can not handle this structure.')
-
-    @computations.federated_computation(
-        computation_types.FederatedType([('a', tf.int32), (None, tf.float32),
-                                         ('b', tf.bool)],
-                                        placement_literals.CLIENTS))
-    def foo(x):
-      x.b = False
-      return x
-
-    self.assertEqual(
-        foo([[5, 1.0, True], [0, 2.0, True], [-5, 3.0, False]]), [
-            structure.Struct([
-                ('a', 5),
-                (None, 1.0),
-                ('b', False),
-            ]),
-            structure.Struct([
-                ('a', 0),
-                (None, 2.0),
-                ('b', False),
-            ]),
-            structure.Struct([
-                ('a', -5),
-                (None, 3.0),
-                ('b', False),
-            ])
-        ])
 
   def test_setattr_federated_named_tuple_fails_on_implicit_conversion(self):
 

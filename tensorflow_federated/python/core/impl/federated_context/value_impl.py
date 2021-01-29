@@ -167,14 +167,14 @@ class ValueImpl(value_base.Value, metaclass=abc.ABCMeta):
     if _is_federated_named_tuple(self):
       new_comp = building_block_factory.create_federated_setattr_call(
           self._comp, name, value_comp)
-      super().__setattr__('_comp', new_comp)
-      return
-    named_tuple_setattr_lambda = building_block_factory.create_named_tuple_setattr_lambda(
-        self.type_signature, name, value_comp)
-    new_comp = building_blocks.Call(named_tuple_setattr_lambda, self._comp)
-    fc_context = self._context_stack.current
-    ref = fc_context.bind_computation_to_reference(new_comp)
-    super().__setattr__('_comp', ref)
+    else:
+      named_tuple_setattr_lambda = building_block_factory.create_named_tuple_setattr_lambda(
+          self.type_signature, name, value_comp)
+      called_setattr_lambda = building_blocks.Call(named_tuple_setattr_lambda,
+                                                   self._comp)
+      fc_context = self._context_stack.current
+      new_comp = fc_context.bind_computation_to_reference(called_setattr_lambda)
+    super().__setattr__('_comp', new_comp)
 
   def __bool__(self):
     raise TypeError(
